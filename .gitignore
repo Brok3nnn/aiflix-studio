@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+
+# Generated media: clips, films, posters and plan snapshots
+generated/
+
+# Local configuration
+.env
+.env.*
+!.env.example
+
+# Logs and editor files
+*.log
+.DS_Store
+.idea/
+.vscode/

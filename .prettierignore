@@ -1,0 +1,8 @@
+dist/
+coverage/
+generated/
+assets/
+package-lock.json
+
+# Third-party text kept verbatim
+CODE_OF_CONDUCT.md
