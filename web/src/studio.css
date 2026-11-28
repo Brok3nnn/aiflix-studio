@@ -63,23 +63,6 @@
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
 }
 
-.sc-create__head {
-  margin-bottom: 24px;
-}
-
-.sc-create__head h2 {
-  margin: 0;
-  font-size: 1.4rem;
-  font-weight: 800;
-  letter-spacing: -0.01em;
-}
-
-.sc-create__head p {
-  margin: 6px 0 0;
-  color: rgba(255, 255, 255, 0.38);
-  font-size: 0.85rem;
-}
-
 /* ── Form ── */
 .sc-form {
   display: grid;
@@ -88,9 +71,6 @@
 .sc-field {
   display: grid;
   gap: 8px;
-}
-.sc-field--full {
-  grid-column: 1 / -1;
 }
 
 .sc-field label {
@@ -213,30 +193,6 @@
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
-}
-.sc-gen-btn svg {
-  width: 18px;
-  height: 18px;
-}
-
-.sc-pulse-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #fff;
-  animation: scPulse 1.2s ease-in-out infinite;
-}
-
-@keyframes scPulse {
-  0%,
-  100% {
-    opacity: 0.3;
-    transform: scale(0.7);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.3);
-  }
 }
 
 /* ── Status ── */
@@ -685,12 +641,6 @@
   border-color: rgba(239, 68, 68, 0.4);
   color: #fca5a5;
   background: rgba(239, 68, 68, 0.08);
-}
-
-/* ── Refresh Button ── */
-.sc-lib__head .sc-act-btn {
-  padding: 6px 14px;
-  font-size: 0.7rem;
 }
 
 /* ── Responsive ── */

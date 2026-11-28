@@ -6,6 +6,8 @@ Write a premise, pick a length and a look: an AI pipeline plans, shoots and edit
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js 24](https://img.shields.io/badge/node-24-339933.svg)](https://nodejs.org/)
 
+![The studio in mock mode: the premise form, the five-step pipeline and a finished film in the list](docs/studio.jpg)
+
 ## Overview
 
 AIFLIX Studio is a local, single-user web app. You describe a film in a few sentences, choose a
@@ -25,6 +27,22 @@ Features:
 - **Failure handling**: retries with backoff, `Retry-After`, model fallback chains, resumable
   jobs and recovery of jobs interrupted by a restart.
 - **Cost guards**: one running job at a time and a cap on clips per job, both configurable.
+
+## Quick start
+
+You need Node.js 24 and ffmpeg (with ffprobe); [Getting started](#getting-started) has the
+install commands.
+
+```bash
+git clone https://github.com/Brok3nnn/aiflix-studio.git
+cd aiflix-studio
+npm ci
+npm run dev
+```
+
+Open http://127.0.0.1:5173, write a premise and press **Generate film**. No `.env` is needed: the
+studio uses the mock providers, offline and free. On macOS, see
+[Getting started](#getting-started) for text on the end card.
 
 ## Architecture
 
@@ -51,7 +69,7 @@ are interchangeable.
 | Step               | What happens                                                                                                                                                                                                                           | Code                                                                                                                   |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | 1. Director plan   | Gemini in JSON mode writes the story bible for exactly the planned number of scenes. The answer is validated field by field; anything missing or malformed gets a usable default, and the cast is topped up to the requested minimums. | [`director.ts`](server/src/studio/director.ts), [`providers/gemini.ts`](server/src/studio/providers/gemini.ts)         |
-| 2. Locked pass     | A second, low-temperature call rewrites the synopsis and the poster direction using only facts from the plan, so neither promises something the film does not show. If it fails, both are built from the plan instead.                 | [`director.ts`](server/src/studio/director.ts)                                                                         |
+| 2. Locked pass     | A second call rewrites the synopsis and the poster direction using only facts from the plan, so neither promises something the film does not show. If it fails, both are built from the plan instead.                                  | [`director.ts`](server/src/studio/director.ts)                                                                         |
 | 3. Runtime planner | Splits the runtime into clip lengths (below).                                                                                                                                                                                          | [`shared/planner.ts`](shared/planner.ts)                                                                               |
 | 4. Shot prompts    | One prompt per scene with the style lock and character lock, kept within a 5,000-character budget.                                                                                                                                     | [`prompts.ts`](server/src/studio/prompts.ts)                                                                           |
 | 5. Clips           | One `POST https://fal.run/fal-ai/ltx-2.3/text-to-video/fast` per scene: 1080p, 16:9, 25 fps, with audio. Clips are written under a temporary name and renamed when complete.                                                           | [`providers/fal.ts`](server/src/studio/providers/fal.ts), [`jobs/pipeline.ts`](server/src/studio/jobs/pipeline.ts)     |
@@ -88,28 +106,32 @@ Consistency between clips is **text-only**. Every shot prompt carries:
 - a **character lock**: face, build, wardrobe and signature details of everyone on screen (at
   most three named characters per scene).
 
-There are no reference images and no seeds, so **faces, wardrobe and look can still drift
-between scenes**. The locks reduce drift; they do not remove it.
+There are no reference images and no seeds: that keeps the pipeline cheaper and simpler, but
+**faces, wardrobe and look can still drift between scenes**. The locks reduce drift; they do not
+remove it.
 
 ### Failure handling
 
 - **Retries with backoff**: network errors and 5xx responses are retried up to 3 times (2 s, 4 s,
-  8 s).
+  8 s). The paid fal.ai render request is the exception: after a timeout or a 5xx the clip may
+  already be rendering, and billed, so it is sent again only when the connection could not be
+  opened. Otherwise that scene fails and the film can be resumed.
 - **Rate limits**: a 429 is retried up to 8 times. The wait is the `Retry-After` header (fal.ai)
   or Gemini's `RetryInfo` delay, else 30 s; no single wait is longer than 2 minutes. Each retry is
   written to the job log before the wait, so the UI shows it.
 - **Model fallback chains**: the director tries `STUDIO_SCRIPT_MODEL` (default
-  `gemini-2.5-flash`), then `gemini-3-flash-preview`, then `gemini-3.1-pro-preview`. The poster
-  tries `STUDIO_POSTER_MODEL` (default `gemini-2.5-flash-image`), then
-  `gemini-3.1-flash-image-preview`. The next model is tried only when one is unavailable,
-  rate-limited, retired or returns nothing usable; never after a content-policy refusal or an
-  authentication error.
+  `gemini-3.8-flash`), then `gemini-3.6-flash`. The poster tries `STUDIO_POSTER_MODEL` (default
+  `gemini-3.1-flash-image`), then `gemini-3.1-flash-lite-image`. Each fallback is priced like the
+  model before it or lower. The next model is tried only when one is unavailable, rate-limited,
+  retired or returns nothing usable; never after a content-policy refusal or an authentication
+  error. These IDs were checked against Google's model list on 2026-11-28; live mode was last
+  run end to end with the previous defaults, `gemini-2.5-flash` and `gemini-2.5-flash-image`.
 - **Resumable jobs**: the validated plan, scene lengths and locked copy are saved as
   `plan-snapshot.json` before the first paid video call. **Resume** reloads that plan, reuses
   every clip already on disk and renders only the rest. The requested runtime is never changed by
   a failure, so the resumed film has every scene.
-- **Restarts**: jobs run inside the server process. On start-up, films still marked as rendering
-  are marked as failed with the reason "interrupted", and can be resumed.
+- **Restarts** (with MongoDB): jobs run inside the server process. On start-up, films still marked
+  as rendering are marked as failed with the reason "interrupted", and can be resumed.
 - **Content policy**: if a provider refuses a prompt under its content policy, that scene fails
   with a message that names it, for example
   `Scene 3 ("The Ambush") was rejected by fal.ai's content policy`. Such a failure is not
@@ -129,8 +151,9 @@ Retries and model fallbacks can add calls. Prices change, so see the providers' 
 [fal.ai LTX 2.3 Fast](https://fal.ai/models/fal-ai/ltx-2.3/text-to-video/fast),
 [fal.ai pricing](https://fal.ai/pricing) and
 [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing). The form shows the clip count
-before you submit. By default the server runs one job at a time and allows at most 12 clips per
-film (up to 174 seconds); raise `STUDIO_MAX_CLIPS_PER_JOB` for longer films.
+before you submit, and in live mode **Generate film** and **Resume** ask for confirmation with the
+expected number of paid calls. By default the server runs one job at a time and allows at most 12
+clips per film (up to 174 seconds); raise `STUDIO_MAX_CLIPS_PER_JOB` for longer films.
 
 **Mock mode costs nothing**: a deterministic story bible built from your premise, placeholder
 clips rendered locally with ffmpeg (a coloured field, a tone and the scene title) and a
@@ -147,15 +170,14 @@ placeholder poster. It runs the same pipeline, edit and end card included.
   Snapshots, atomic clip files and start-up recovery make that a resumable failure rather than
   a lost one. A queue would be the next step for more users.
 - **Exact runtime first.** The planner only produces lengths the model accepts, and the editor
-  pads or trims to the frame, so a 64-second request yields a 64-second film.
+  re-times the joined clips to 25 fps and pads or trims to the frame, so a 64-second request
+  yields a 64-second film of 1,600 frames.
 - **One ffmpeg pass for the edit** (normalise, join, trim, fade, text). The commands are built by
   pure functions and unit-tested; option values are escaped for ffmpeg's filtergraph syntax.
 - **End card over the last seconds, not after them.** The picture fades to black over the final
   `min(5, T/4)` seconds and the text appears there, so the runtime stays exact.
 - **The requested brief is immutable.** Jobs can only update fields that describe progress and
   results; the type system rejects a patch that touches the runtime.
-- **Text-only consistency.** No reference images or seeds: cheaper and simpler, at the cost of
-  some drift between clips.
 - **The synchronous fal.ai endpoint.** One request per clip that returns when the clip is ready.
   The queue API would survive long renders better (see the roadmap).
 
@@ -170,39 +192,40 @@ placeholder poster. It runs the same pipeline, edit and end card included.
 
 ## Getting started
 
-You need **Node.js 24** and **ffmpeg** (with ffprobe) on your `PATH`.
-
-### 1. Mock mode (no keys, no cost)
+You need **Node.js 24** and **ffmpeg** (with ffprobe) on your `PATH`:
 
 ```bash
-git clone https://github.com/Brok3nnn/aiflix-studio.git
-cd aiflix-studio
-npm ci
-npm run dev
+brew install ffmpeg        # macOS (Homebrew)
+sudo apt install ffmpeg    # Debian and Ubuntu
 ```
-
-Open http://127.0.0.1:5173, write a premise and press **Generate film**. No `.env` is needed:
-the studio uses the mock providers and keeps films in memory. Generated media goes to
-`generated/`.
 
 > **Text on the end card needs ffmpeg's `drawtext` filter** (ffmpeg built with libfreetype).
 > Ubuntu and Debian packages include it. Homebrew's default `ffmpeg` formula does not: the studio
 > still works, but the end card and placeholder titles have no text, and the server and job
-> logs say so.
-> For text on macOS, `brew install ffmpeg-full` and set
-> `FFMPEG_PATH=$(brew --prefix ffmpeg-full)/bin/ffmpeg` and
-> `FFPROBE_PATH=$(brew --prefix ffmpeg-full)/bin/ffprobe` in `.env`.
+> logs say so. For text on macOS, install `ffmpeg-full`, a large install with about 50
+> dependencies, and pass its paths when you start the studio:
+>
+> ```bash
+> brew install ffmpeg-full
+> FFMPEG_PATH="$(brew --prefix ffmpeg-full)/bin/ffmpeg" \
+>   FFPROBE_PATH="$(brew --prefix ffmpeg-full)/bin/ffprobe" npm run dev
+> ```
+
+### 1. Mock mode (no keys, no cost)
+
+The [Quick start](#quick-start) runs the studio in mock mode. Generated media goes to
+`generated/`.
 
 ### 2. Live mode (paid API calls)
 
 ```bash
 cp .env.example .env
 # Set GOOGLE_API_KEY, FAL_KEY and STUDIO_PROVIDERS=live in .env.
-docker compose up -d mongo   # MongoDB at the MONGO_URI from .env.example
 npm run dev
 ```
 
-To skip MongoDB in live mode, leave `MONGO_URI` empty; films are then kept in memory.
+To keep films across restarts, run `docker compose up -d mongo` and set
+`MONGO_URI=mongodb://localhost:27017/aiflix-studio` in `.env`.
 
 ### 3. Production build
 
@@ -219,12 +242,12 @@ All variables are optional; see [`.env.example`](.env.example). Empty values use
 | ---------------------------- | ------------------------ | ------------------------------------------------------------------------------- |
 | `GOOGLE_API_KEY`             | (empty)                  | Gemini key for the director, the locked pass and the poster. Live mode only.    |
 | `FAL_KEY`                    | (empty)                  | fal.ai key for the video clips. Live mode only.                                 |
-| `MONGO_URI`                  | (empty: in-memory store) | MongoDB connection string. `.env.example` points at the docker compose service. |
+| `MONGO_URI`                  | (empty: in-memory store) | MongoDB connection string; the docker compose service is shown under live mode. |
 | `HOST`                       | `127.0.0.1`              | API address. Keep it on loopback: there is no authentication.                   |
 | `PORT`                       | `3001`                   | API port. The Vite dev server proxies `/api` and `/media` to it.                |
 | `GENERATED_DIR`              | `generated`              | Folder for clips, films, posters and plan snapshots.                            |
-| `STUDIO_SCRIPT_MODEL`        | `gemini-2.5-flash`       | First model of the director's fallback chain.                                   |
-| `STUDIO_POSTER_MODEL`        | `gemini-2.5-flash-image` | First model of the poster's fallback chain.                                     |
+| `STUDIO_SCRIPT_MODEL`        | `gemini-3.8-flash`       | First model of the director's fallback chain.                                   |
+| `STUDIO_POSTER_MODEL`        | `gemini-3.1-flash-image` | First model of the poster's fallback chain.                                     |
 | `STUDIO_PROVIDERS`           | `mock`                   | `mock` (offline, free) or `live` (Gemini and fal.ai, paid; needs both keys).    |
 | `STUDIO_MAX_CONCURRENT_JOBS` | `1`                      | Films that may render at the same time.                                         |
 | `STUDIO_MAX_CLIPS_PER_JOB`   | `12`                     | Most clips (paid video calls) per film. 12 allows up to 174 s; 480 s needs 34.  |
@@ -235,19 +258,20 @@ All variables are optional; see [`.env.example`](.env.example). Empty values use
 ## Testing and quality checks
 
 ```bash
-npm test               # Vitest: 94 tests, no network, no API keys
-npm run test:coverage  # with coverage (about 81% of statements)
+npm test               # Vitest: 97 tests, no network, no API keys
+npm run test:coverage  # with coverage (about 82% of statements)
 npm run check          # lint, format check, type check (server and client) and tests
 ```
 
 The tests cover the runtime planner (every valid runtime, the 6-20 s bounds, weights and edge
 cases), director JSON validation and defaults, prompt budgeting, request validation, the ffmpeg
 command builders (including escaping, checked against ffmpeg's own parser), retries and
-`Retry-After`, provider error handling, the duration-overwrite regression, start-up recovery,
-the content-policy path, the HTTP API, and one end-to-end run with the mock providers, the
-in-memory store and the real ffmpeg. The end-to-end test is skipped, with a message, when ffmpeg
-is not installed; CI installs ffmpeg and always runs it. The MongoDB repository is type-checked
-but has no automated test, because the tests must not need a database or the network.
+`Retry-After` (and which paid requests are never sent twice), provider error handling, the
+duration-overwrite regression, start-up recovery, the content-policy path, the HTTP API, and one
+end-to-end run, checked to the frame, with the mock providers, the in-memory store and the real
+ffmpeg. The end-to-end test is skipped, with a message, when ffmpeg is not installed; CI installs
+ffmpeg and always runs it. The MongoDB repository is type-checked but has no automated test,
+because the tests must not need a database or the network.
 
 CI ([`ci.yml`](.github/workflows/ci.yml)) runs `npm run check` and `npm run build` on Node 24 with
 ffmpeg installed.
@@ -279,9 +303,10 @@ runner, progress, snapshots, recovery).
 
 ## Status and limitations
 
-Version 1.0.0. It works end to end in mock mode and in live mode with valid keys.
+Version 1.0.0. It works end to end in mock mode. Live mode was last run end to end with the
+previous Gemini defaults (see [Failure handling](#failure-handling)).
 
-- **One job at a time** by default (configurable), and jobs run inside the API process.
+- **One job at a time** by default (configurable).
 - **Single user, no authentication.** It is a local tool: the server binds to `127.0.0.1` and
   refuses requests addressed to other host names. Add authentication before exposing it on a
   network.
@@ -289,8 +314,6 @@ Version 1.0.0. It works end to end in mock mode and in live mode with valid keys
   rewritten to get around a refusal.
 - **Generated media stays on local disk** in `GENERATED_DIR`. Deleting a film in the studio
   deletes its folder; nothing is uploaded anywhere except the prompts sent to the providers.
-- **Consistency is text-only**, so faces and look can drift between scenes.
-- Without MongoDB, films are lost when the server restarts (their media stays on disk).
 
 ## Roadmap
 

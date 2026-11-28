@@ -3,8 +3,17 @@
  * the rendered MP4.
  */
 import { writeFile } from 'node:fs/promises';
+import { CLIP_ASPECT_RATIO, CLIP_RESOLUTION } from '../prompts.ts';
 import { asRecord } from '../text.ts';
-import { ContentPolicyError, errorMessage, isAbortError, isNetworkError, ProviderError } from './errors.ts';
+import {
+  ContentPolicyError,
+  errorMessage,
+  isAbortError,
+  isConnectError,
+  isNetworkError,
+  ProviderError,
+  RETRYABLE_STATUSES,
+} from './errors.ts';
 import { parseRetryAfter, withRetry, type RetryPolicy, type Sleep } from './retry.ts';
 import type { CallContext, ClipRequest, VideoModel } from './types.ts';
 
@@ -12,8 +21,6 @@ const PROVIDER = 'fal.ai';
 
 export const FAL_LTX_FAST_ENDPOINT = 'https://fal.run/fal-ai/ltx-2.3/text-to-video/fast';
 export const CLIP_FPS = 25;
-
-const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 
 export interface FalVideoOptions {
   apiKey: string;
@@ -42,10 +49,11 @@ export class FalVideoModel implements VideoModel {
   async renderClip(request: ClipRequest, context: CallContext = {}): Promise<void> {
     const scene = `scene ${String(request.scene.index + 1)}`;
     const retry = { ...context, policy: this.#retryPolicy, sleep: this.#sleep };
+    const renderRetry = { ...retry, retryIf: isSafeToResend };
     const videoUrl = await withRetry(
       `Render ${scene}`,
       () => this.#requestClip(request, context.signal),
-      retry,
+      renderRetry,
     );
     await withRetry(
       `Download ${scene}`,
@@ -61,8 +69,8 @@ export class FalVideoModel implements VideoModel {
       body: JSON.stringify({
         prompt: request.prompt,
         duration: request.durationSeconds,
-        resolution: '1080p',
-        aspect_ratio: '16:9',
+        resolution: CLIP_RESOLUTION,
+        aspect_ratio: CLIP_ASPECT_RATIO,
         fps: CLIP_FPS,
         generate_audio: true,
         // The provider's default; sent explicitly so the intent is visible. Never disabled.
@@ -105,6 +113,16 @@ export class FalVideoModel implements VideoModel {
       });
     }
   }
+}
+
+/**
+ * Whether a failed render request may be sent again. The render is paid and not idempotent:
+ * after a timeout, a dropped connection or a 5xx, fal.ai may already be rendering (and billing)
+ * the clip. So only a rate limit or a connection that never opened is retried; anything else
+ * fails the scene, and the film can be resumed. The download is free and keeps every retry.
+ */
+export function isSafeToResend(error: unknown): boolean {
+  return (error instanceof ProviderError && error.rateLimited) || isConnectError(error);
 }
 
 async function readJson(response: Response): Promise<unknown> {

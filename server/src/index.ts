@@ -16,6 +16,7 @@ import type { FilmRepository } from './store/repository.ts';
 import { Ffmpeg } from './studio/editor/runner.ts';
 import { recoverInterruptedFilms } from './studio/jobs/recovery.ts';
 import { JobRunner } from './studio/jobs/runner.ts';
+import { errorMessage } from './studio/providers/errors.ts';
 import { createProviders } from './studio/providers/index.ts';
 
 const WEB_DIR = fileURLToPath(new URL('../../dist', import.meta.url));
@@ -34,7 +35,7 @@ async function main(): Promise<void> {
 
   await mkdir(config.generatedDir, { recursive: true });
   const repo: FilmRepository = config.mongoUri
-    ? await MongoFilmRepository.connect(config.mongoUri)
+    ? await connectMongo(config.mongoUri)
     : new MemoryFilmRepository();
 
   const recovered = await recoverInterruptedFilms(repo);
@@ -110,6 +111,17 @@ async function main(): Promise<void> {
   process.once('SIGTERM', () => {
     shutdown('SIGTERM');
   });
+}
+
+/** Connects to MongoDB, or stops with a one-line hint instead of the driver's stack trace. */
+async function connectMongo(uri: string): Promise<FilmRepository> {
+  try {
+    return await MongoFilmRepository.connect(uri);
+  } catch (error) {
+    throw new ConfigError(
+      `Could not connect to MongoDB at MONGO_URI (${errorMessage(error)}). Start it with \`docker compose up -d mongo\`, or leave MONGO_URI empty to keep films in memory.`,
+    );
+  }
 }
 
 main().catch((error: unknown) => {

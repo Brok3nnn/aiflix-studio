@@ -3,7 +3,7 @@ import path from 'node:path';
 import { ApiError, type GenerateContentResponse } from '@google/genai';
 import { describe, expect, it } from 'vitest';
 import { ContentPolicyError, ProviderError } from '../src/studio/providers/errors.ts';
-import { falError, FalVideoModel } from '../src/studio/providers/fal.ts';
+import { FAL_LTX_FAST_ENDPOINT, falError, FalVideoModel } from '../src/studio/providers/fal.ts';
 import {
   GeminiDirector,
   GeminiPoster,
@@ -23,8 +23,8 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
   });
 }
 
-/** A fetch stand-in that replays canned responses and records each request. */
-function scriptedFetch(responses: Response[]): {
+/** A fetch stand-in that replays canned responses (or transport errors) and records each request. */
+function scriptedFetch(responses: (Response | Error)[]): {
   fetch: typeof fetch;
   requests: { url: string; body: unknown }[];
 } {
@@ -33,10 +33,15 @@ function scriptedFetch(responses: Response[]): {
     const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : null;
     requests.push({ url: input instanceof Request ? input.url : input.toString(), body });
     const response = responses.shift();
+    if (response instanceof Error) return Promise.reject(response);
     return response ? Promise.resolve(response) : Promise.reject(new Error('unexpected request'));
   };
   return { fetch: fetchStub, requests };
 }
+
+/** What fetch() rejects with when undici fails with `code`. */
+const fetchFailed = (code: string): TypeError =>
+  new TypeError('fetch failed', { cause: Object.assign(new Error(code), { code }) });
 
 const clipRequest = (outputPath: string) => ({
   prompt: 'Scene 1 of 2. Generate exactly one 8-second cinematic film clip.',
@@ -110,6 +115,60 @@ describe('FalVideoModel', () => {
     expect(requests).toHaveLength(3);
   });
 
+  it('never sends a paid render twice after a server error or a timeout', async () => {
+    // fal.ai may already be rendering (and billing) the clip: the scene fails instead, and the
+    // film can be resumed.
+    for (const failure of [json(503, { detail: 'busy' }), fetchFailed('UND_ERR_HEADERS_TIMEOUT')]) {
+      const { fetch, requests } = scriptedFetch([failure]);
+      const model = new FalVideoModel({ apiKey: 'test-key', fetch, sleep: noWait });
+      const error: unknown = await model
+        .renderClip(clipRequest(path.join(await tempDir(), 'c.mp4')))
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProviderError);
+      expect(requests).toHaveLength(1);
+    }
+  });
+
+  it('sends a render again when the connection could not be opened', async () => {
+    const waits: number[] = [];
+    const { fetch, requests } = scriptedFetch([
+      fetchFailed('ECONNREFUSED'),
+      json(200, { video: { url: 'https://files.example.test/clip.mp4' } }),
+      new Response('mp4', { status: 200 }),
+    ]);
+    const model = new FalVideoModel({
+      apiKey: 'test-key',
+      fetch,
+      sleep: (ms) => {
+        waits.push(ms);
+        return Promise.resolve();
+      },
+    });
+    await model.renderClip(clipRequest(path.join(await tempDir(), 'c.mp4')));
+    expect(waits).toEqual([2_000]);
+    expect(requests.map((request) => request.url)).toEqual([
+      FAL_LTX_FAST_ENDPOINT,
+      FAL_LTX_FAST_ENDPOINT,
+      'https://files.example.test/clip.mp4',
+    ]);
+  });
+
+  it('retries the free download after a server error', async () => {
+    const { fetch, requests } = scriptedFetch([
+      json(200, { video: { url: 'https://files.example.test/clip.mp4' } }),
+      new Response('', { status: 503 }),
+      new Response('mp4', { status: 200 }),
+    ]);
+    const output = path.join(await tempDir(), 'c.mp4');
+    await new FalVideoModel({ apiKey: 'test-key', fetch, sleep: noWait }).renderClip(clipRequest(output));
+    expect(requests.map((request) => request.url)).toEqual([
+      FAL_LTX_FAST_ENDPOINT,
+      'https://files.example.test/clip.mp4',
+      'https://files.example.test/clip.mp4',
+    ]);
+    expect(await readFile(output, 'utf8')).toBe('mp4');
+  });
+
   it('does not retry other validation errors', () => {
     const error = falError(422, new Headers(), {
       detail: [{ type: 'less_than_equal', msg: 'duration too long' }],
@@ -125,17 +184,20 @@ describe('FalVideoModel', () => {
 function scriptedGemini(results: (GenerateContentResponse | Error)[]): {
   client: GeminiClient;
   models: string[];
+  configs: unknown[];
 } {
   const models: string[] = [];
+  const configs: unknown[] = [];
   const client: GeminiClient = {
     generateContent: (params) => {
       models.push(params.model);
+      configs.push(params.config);
       const result = results.shift();
       if (!result) return Promise.reject(new Error('unexpected call'));
       return result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
     },
   };
-  return { client, models };
+  return { client, models, configs };
 }
 
 const textResponse = (text: string): GenerateContentResponse =>
@@ -149,7 +211,7 @@ describe('Gemini providers', () => {
       status: 503,
       message: '{"error":{"message":"The model is overloaded."}}',
     });
-    const { client, models } = scriptedGemini([overloaded, textResponse('{"synopsis":"ok"}')]);
+    const { client, models, configs } = scriptedGemini([overloaded, textResponse('{"synopsis":"ok"}')]);
     const notices: string[] = [];
     const director = new GeminiDirector({
       client,
@@ -171,6 +233,8 @@ describe('Gemini providers', () => {
     });
     expect(plan).toEqual({ synopsis: 'ok' });
     expect(models).toEqual(['model-a', 'model-b']);
+    // Gemini 3 sampling parameters stay at the model defaults.
+    for (const config of configs) expect(config).not.toHaveProperty('temperature');
     expect(notices[0]).toContain(
       'model-a failed (Gemini returned HTTP 503: The model is overloaded.); trying model-b',
     );
@@ -195,7 +259,7 @@ describe('Gemini providers', () => {
     const image = {
       candidates: [{ content: { parts: [{ inlineData: { data: Buffer.from('png').toString('base64') } }] } }],
     } as unknown as GenerateContentResponse;
-    const { client } = scriptedGemini([image]);
+    const { client, configs } = scriptedGemini([image]);
     const output = path.join(await tempDir(), 'poster.png');
     await new GeminiPoster({ client, models: ['image-model'], sleep: noWait }).renderPoster({
       prompt: 'Poster',
@@ -203,6 +267,7 @@ describe('Gemini providers', () => {
       title: 'T',
     });
     expect(await readFile(output, 'utf8')).toBe('png');
+    expect(configs[0]).not.toHaveProperty('temperature');
   });
 
   it('maps SDK errors and reads RetryInfo delays', () => {
@@ -215,9 +280,9 @@ describe('Gemini providers', () => {
   });
 
   it('builds model chains without duplicates', () => {
-    expect(modelChain('gemini-2.5-flash', ['gemini-2.5-flash', 'gemini-3-flash-preview'])).toEqual([
-      'gemini-2.5-flash',
-      'gemini-3-flash-preview',
+    expect(modelChain('gemini-3.8-flash', ['gemini-3.8-flash', 'gemini-3.6-flash'])).toEqual([
+      'gemini-3.8-flash',
+      'gemini-3.6-flash',
     ]);
     expect(modelChain(' custom ', ['b'])).toEqual(['custom', 'b']);
   });

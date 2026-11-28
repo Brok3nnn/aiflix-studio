@@ -34,6 +34,8 @@ export interface RetryOptions {
   notify?: (message: string) => Promise<void>;
   sleep?: Sleep;
   signal?: AbortSignal;
+  /** Narrows which failures may be retried, for calls that are not safe to repeat. */
+  retryIf?: (error: unknown) => boolean;
 }
 
 /**
@@ -54,7 +56,8 @@ export async function withRetry<T>(
       return await task();
     } catch (error) {
       if (options.signal?.aborted || isAbortError(error)) throw error;
-      const plan = planRetry(error, retry, policy);
+      const allowed = options.retryIf ? options.retryIf(error) : true;
+      const plan = allowed ? planRetry(error, retry, policy) : null;
       if (!plan) throw error;
 
       const seconds = Math.round(plan.delayMs / 1000);

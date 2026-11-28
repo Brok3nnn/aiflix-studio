@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Films of three or more clips are frame-exact: a frame no longer goes missing at scene cuts, and
+  a 64-second film is 1,600 frames and 64.000 seconds long.
+- The macOS instructions for end-card text pass `FFMPEG_PATH` and `FFPROBE_PATH` on the command
+  line; `$(...)` is not expanded in `.env`.
+- Copying `.env.example` no longer makes MongoDB a requirement, and an unreachable MongoDB stops
+  the server with a one-line hint instead of a stack trace.
+- While a film renders, the page no longer restarts a playing video, closes the story bible or
+  moves the job log you are reading.
+
+### Changed
+
+- A paid fal.ai render request is sent again only after a rate limit or a connection that never
+  opened, so a timed-out render is not paid twice; the scene fails and the film can be resumed.
+- In live mode, **Generate film** and **Resume** ask for confirmation with the expected number of
+  paid calls.
+- Default Gemini models: `gemini-3.8-flash` (fallback `gemini-3.6-flash`) for the director and
+  `gemini-3.1-flash-image` (fallback `gemini-3.1-flash-lite-image`) for the poster, replacing the
+  deprecated `gemini-2.5-flash` and `gemini-2.5-flash-image` and the preview fallbacks, one of
+  which Google has shut down. The director no longer falls back to a Pro-priced model.
+- Gemini requests no longer set a temperature: Gemini 3 models use their defaults, as Google
+  advises.
+- The README has a quick start, ffmpeg install commands and fewer repeats.
+
 ## [1.0.0] - 2026-11-26
 
 ### Added
@@ -24,3 +51,6 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - MongoDB persistence behind a repository interface, with an in-memory store for tests and
   the demo.
 - Tests, linting, formatting, type checks and CI.
+
+[Unreleased]: https://github.com/Brok3nnn/aiflix-studio/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Brok3nnn/aiflix-studio/releases/tag/v1.0.0

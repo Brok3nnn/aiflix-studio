@@ -10,7 +10,14 @@ import {
   type GenerateContentParameters,
   type GenerateContentResponse,
 } from '@google/genai';
-import { ContentPolicyError, errorMessage, isAbortError, isNetworkError, ProviderError } from './errors.ts';
+import {
+  ContentPolicyError,
+  errorMessage,
+  isAbortError,
+  isNetworkError,
+  ProviderError,
+  RETRYABLE_STATUSES,
+} from './errors.ts';
 import { withRetry, type RetryPolicy, type Sleep } from './retry.ts';
 import type {
   CallContext,
@@ -23,12 +30,14 @@ import type {
 
 const PROVIDER = 'Gemini';
 
-export const DEFAULT_SCRIPT_MODEL = 'gemini-2.5-flash';
-export const SCRIPT_MODEL_FALLBACKS = ['gemini-3-flash-preview', 'gemini-3.1-pro-preview'];
-export const DEFAULT_POSTER_MODEL = 'gemini-2.5-flash-image';
-export const POSTER_MODEL_FALLBACKS = ['gemini-3.1-flash-image-preview'];
+// Stable model IDs from Google's models and deprecations pages, checked on 2026-11-28. Each
+// fallback is priced like the model before it or lower.
+export const DEFAULT_SCRIPT_MODEL = 'gemini-3.8-flash';
+export const SCRIPT_MODEL_FALLBACKS = ['gemini-3.6-flash'];
+export const DEFAULT_POSTER_MODEL = 'gemini-3.1-flash-image';
+export const POSTER_MODEL_FALLBACKS = ['gemini-3.1-flash-lite-image'];
+// No temperature or other sampling parameters, per Google: https://aistudio.google.com/docs/whats-new-gemini-3.6
 
-const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 /** Statuses where another model may succeed: overloaded, rate limited or retired models. */
 const FALLBACK_STATUSES = new Set([404, ...RETRYABLE_STATUSES]);
 const BLOCKING_FINISH_REASONS = new Set([
@@ -70,14 +79,14 @@ export class GeminiDirector implements DirectorModel {
   }
 
   writeStoryPlan(request: StoryPlanRequest, context: CallContext = {}): Promise<unknown> {
-    return this.#generateJson('Story plan', request.prompt, 0.35, context);
+    return this.#generateJson('Story plan', request.prompt, context);
   }
 
   lockCanon(request: CanonRequest, context: CallContext = {}): Promise<unknown> {
-    return this.#generateJson('Story lock', request.prompt, 0.15, context);
+    return this.#generateJson('Story lock', request.prompt, context);
   }
 
-  #generateJson(label: string, prompt: string, temperature: number, context: CallContext): Promise<unknown> {
+  #generateJson(label: string, prompt: string, context: CallContext): Promise<unknown> {
     return tryModels(this.#options.models, label, context, async (model) => {
       const response = await withRetry(
         `${label} (${model})`,
@@ -85,7 +94,7 @@ export class GeminiDirector implements DirectorModel {
           call(this.#options.client, {
             model,
             contents: prompt,
-            config: { responseMimeType: 'application/json', temperature, abortSignal: context.signal },
+            config: { responseMimeType: 'application/json', abortSignal: context.signal },
           }),
         { ...context, policy: this.#options.retryPolicy, sleep: this.#options.sleep },
       );
@@ -109,7 +118,7 @@ export class GeminiPoster implements PosterModel {
           call(this.#options.client, {
             model,
             contents: [{ role: 'user', parts: [{ text: request.prompt }] }],
-            config: { responseModalities: ['IMAGE'], temperature: 0.4, abortSignal: context.signal },
+            config: { responseModalities: ['IMAGE'], abortSignal: context.signal },
           }),
         { ...context, policy: this.#options.retryPolicy, sleep: this.#options.sleep },
       );

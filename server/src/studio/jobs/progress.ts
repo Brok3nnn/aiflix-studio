@@ -28,10 +28,6 @@ export class JobReporter {
     return this.#tryWrite({ progress: Math.round(progress), statusText }, this.#entry('info', message));
   }
 
-  info(message: string): Promise<void> {
-    return this.#tryWrite({}, this.#entry('info', message));
-  }
-
   warn(message: string): Promise<void> {
     return this.#tryWrite({}, this.#entry('warn', message));
   }

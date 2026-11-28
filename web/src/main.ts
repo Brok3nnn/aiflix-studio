@@ -1,7 +1,7 @@
 import './base.css';
 import './studio.css';
 import type { FilmDto, Look, StudioInfoDto } from '../../shared/api.ts';
-import { isValidRuntime, previewSceneDurations } from '../../shared/planner.ts';
+import { isValidRuntime, planSceneCount, previewSceneDurations } from '../../shared/planner.ts';
 import { api } from './api.ts';
 import { esc } from './html.ts';
 import { currentRoute, navigate, onRouteChange } from './router.ts';
@@ -102,16 +102,40 @@ function renderShell(): void {
   app.addEventListener('click', onAction);
 }
 
+const renderedHtml = new WeakMap<HTMLElement, string>();
+
+/**
+ * Replaces a panel's markup only when it changed. Polling re-renders every 2 seconds, and a
+ * needless replace would restart a playing video, close open details and reset scrolling.
+ */
+function setHtml(target: HTMLElement, html: string): boolean {
+  if (renderedHtml.get(target) === html) return false;
+  renderedHtml.set(target, html);
+  target.innerHTML = html;
+  return true;
+}
+
 function render(): void {
-  element('#app-header', HTMLElement).innerHTML = headerHtml(state.info);
+  setHtml(element('#app-header', HTMLElement), headerHtml(state.info));
   const focused = focusedFilm();
-  element('#sc-progress', HTMLElement).innerHTML = progressHtml(focused);
-  element('#sc-movies', HTMLElement).innerHTML = libraryHtml(state.films, state.selected?.id ?? null);
-  element('#sc-result', HTMLElement).innerHTML = state.selected ? resultHtml(state.selected) : '';
+  setHtml(element('#sc-progress', HTMLElement), progressHtml(focused));
+  setHtml(element('#sc-movies', HTMLElement), libraryHtml(state.films, state.selected?.id ?? null));
+
+  const result = element('#sc-result', HTMLElement);
+  const bibleOpen = result.querySelector('details.sc-bible')?.hasAttribute('open') ?? false;
+  if (setHtml(result, state.selected ? resultHtml(state.selected) : '') && bibleOpen) {
+    result.querySelector('details.sc-bible')?.setAttribute('open', '');
+  }
+
+  // New log lines keep the log at the bottom, unless the reader has scrolled up.
   const terminal = element('#sc-terminal', HTMLElement);
-  terminal.innerHTML = monitorHtml(focused);
-  const logs = terminal.querySelector('.sc-terminal__logs');
-  if (logs) logs.scrollTop = logs.scrollHeight;
+  const previous = terminal.querySelector('.sc-terminal__logs');
+  const followTail = !previous || previous.scrollHeight - previous.scrollTop - previous.clientHeight < 24;
+  const scrollTop = previous?.scrollTop ?? 0;
+  if (setHtml(terminal, monitorHtml(focused))) {
+    const logs = terminal.querySelector('.sc-terminal__logs');
+    if (logs) logs.scrollTop = followTail ? logs.scrollHeight : scrollTop;
+  }
 
   const status = element('#f-status', HTMLElement);
   status.className = `sc-status ${state.message ? `is-${state.message.tone}` : ''}`;
@@ -140,8 +164,29 @@ function renderPlanHint(): void {
   hint.innerHTML = `${esc(String(scenes.length))} scenes of about ${esc(scenes.join(' + '))} = ${esc(String(runtime))}s before the director weights them · ${esc(calls)}.`;
 }
 
+/** Live mode only: asks before work that makes paid calls, with the expected number of calls. */
+function confirmPaidCalls(videoCalls: number, geminiCalls: number): boolean {
+  if (state.info?.providers !== 'live') return true;
+  return window.confirm(
+    `Live mode: this makes about ${String(videoCalls)} paid fal.ai video call(s) and ${String(geminiCalls)} Gemini call(s), billed to your API keys. Continue?`,
+  );
+}
+
+/** A resume reuses the saved plan and the clips already rendered; without a plan it starts over. */
+function confirmResume(film: FilmDto): boolean {
+  if (film.scenes.length === 0) return confirmPaidCalls(planSceneCount(film.brief.durationSeconds), 3);
+  return confirmPaidCalls(film.scenes.length - film.clips.length, 1);
+}
+
 async function submit(): Promise<void> {
   const value = fieldValue;
+  const runtime = Number(value('#f-runtime'));
+  // The confirmation depends on the provider mode, so load it if the page has not yet.
+  const info = state.info ?? (await api.studio());
+  state.info = info;
+  // Story plan, story lock and poster: three Gemini calls besides the clips.
+  const withinLimits = isValidRuntime(runtime) && runtime <= info.limits.maxRuntimeSeconds;
+  if (withinLimits && !confirmPaidCalls(planSceneCount(runtime), 3)) return;
   state.submitting = true;
   state.message = { tone: 'info', text: 'Submitting...' };
   render();
@@ -154,7 +199,7 @@ async function submit(): Promise<void> {
         .map((genre) => genre.trim())
         .filter(Boolean),
       look: value('#f-look') as Look,
-      durationSeconds: Number(value('#f-runtime')),
+      durationSeconds: runtime,
       minMainCharacters: Number(value('#f-main')),
       minSupportingCharacters: Number(value('#f-supporting')),
     });
@@ -174,6 +219,8 @@ function onAction(event: Event): void {
   const action = target.dataset.action;
   if (action === 'open') navigate({ name: 'film', id });
   if (action === 'resume') {
+    const film = state.films.find((candidate) => candidate.id === id) ?? state.selected;
+    if (film && !confirmResume(film)) return;
     api
       .resumeFilm(id)
       .then(() => {

@@ -29,7 +29,7 @@ export function truncate(value: string, maxLength: number): string {
 export function slugify(value: string, fallback: string): string {
   const slug = value
     .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')

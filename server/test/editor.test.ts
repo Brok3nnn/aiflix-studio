@@ -130,6 +130,8 @@ describe('buildAssembleArgs', () => {
     // The silent clip takes its audio from the generated silence (input 2).
     expect(graph).toContain('[2:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a1]');
     expect(graph).toContain('[v0][a0][v1][a1]concat=n=2:v=1:a=1[vcat][acat]');
+    // Constant frame rate after the join, so no frame goes missing at a scene cut.
+    expect(graph).toContain('[vcat]fps=25,tpad=stop_mode=clone');
     expect(graph).toContain('trim=duration=22');
     expect(graph).toContain('apad,atrim=duration=22');
     expect(graph).not.toContain('drawtext');

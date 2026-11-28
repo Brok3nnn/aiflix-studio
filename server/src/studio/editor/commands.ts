@@ -146,6 +146,7 @@ export interface AssembleInput {
  * One ffmpeg pass that edits the film:
  * - normalises every clip to the same size, frame rate and audio format;
  * - concatenates them in scene order (clips without audio get silence);
+ * - re-times the joined video to a constant frame rate;
  * - pads or trims video and audio to exactly `runtimeSeconds`;
  * - fades picture and sound out over the last seconds and draws the end-card text there.
  */
@@ -190,6 +191,10 @@ export function buildAssembleArgs(input: AssembleInput): string[] {
   const fadeSeconds = Math.min(1, card.durationSeconds / 2);
 
   const video = [
+    // concat starts each segment where the longest stream of the previous one ended (usually
+    // the AAC audio), which leaves gaps in the video timestamps; fps fills them so the film has
+    // exactly runtime x OUTPUT_FPS frames.
+    `fps=${String(OUTPUT_FPS)}`,
     `tpad=stop_mode=clone:stop_duration=${formatSeconds(padSeconds)}`,
     `trim=duration=${formatSeconds(runtimeSeconds)}`,
     'setpts=PTS-STARTPTS',

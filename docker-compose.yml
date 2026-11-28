@@ -1,4 +1,5 @@
-# Local MongoDB for persistent films: `docker compose up -d mongo`, then set MONGO_URI in .env.
+# Local MongoDB for persistent films: `docker compose up -d mongo`, then set
+# MONGO_URI=mongodb://localhost:27017/aiflix-studio in .env.
 services:
   mongo:
     image: mongo:8
